@@ -1,4 +1,4 @@
-const CARD_VERSION = 2;
+const CARD_VERSION = 3;
 
 const CSS = `
   :host {
@@ -40,21 +40,21 @@ const CSS = `
   .section-label:first-of-type {
     margin-top: 0;
   }
-  .spools {
+  .filaments {
     display: flex;
     flex-direction: column;
     gap: 12px;
   }
-  .spool {
+  .filament {
     display: flex;
     align-items: center;
     gap: 12px;
   }
-  .spool.empty-spool {
-    opacity: 0.45;
+  .filament.stored {
+    opacity: 0.7;
   }
-  .spool.stored {
-    opacity: 0.75;
+  .filament.empty-spool {
+    opacity: 0.4;
   }
   .color-dot {
     width: 28px;
@@ -63,17 +63,17 @@ const CSS = `
     flex-shrink: 0;
     border: 2px solid var(--bft-border);
   }
-  .spool-info {
+  .filament-info {
     flex: 1;
     min-width: 0;
   }
-  .spool-top {
+  .filament-top {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 4px;
   }
-  .spool-label {
+  .filament-label {
     font-size: 13px;
     font-weight: 500;
     color: var(--bft-text);
@@ -82,7 +82,7 @@ const CSS = `
     text-overflow: ellipsis;
     max-width: 60%;
   }
-  .spool-material {
+  .filament-type {
     font-size: 12px;
     color: var(--bft-secondary);
   }
@@ -105,18 +105,17 @@ const CSS = `
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
   }
-  .spool-bottom {
+  .filament-bottom {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-top: 3px;
   }
-  .spool-status {
+  .filament-status {
     font-size: 11px;
     color: var(--bft-secondary);
-    font-family: monospace;
   }
-  .spool-weight {
+  .filament-weight {
     font-size: 11px;
     color: var(--bft-secondary);
   }
@@ -129,7 +128,7 @@ const CSS = `
     font-size: 12px;
     color: var(--bft-secondary);
   }
-  .no-spools {
+  .no-filaments {
     text-align: center;
     color: var(--bft-secondary);
     font-size: 13px;
@@ -148,8 +147,8 @@ class BambuFilamentTrackerCard extends HTMLElement {
   setConfig(config) {
     this._config = config;
     this._prefix = config.entity_prefix || "filament_tracker";
-    this._showEmpty = config.show_empty_spools !== false;
-    this._showStored = config.show_stored_spools !== false;
+    this._showStored = config.show_stored !== false;
+    this._showEmpty = config.show_empty !== false;
     this._showTotals = config.show_totals !== false;
   }
 
@@ -162,20 +161,10 @@ class BambuFilamentTrackerCard extends HTMLElement {
   _updateCard() {
     if (!this._hass || !this.shadowRoot) return;
 
-    const spoolEntities = this._findSpoolEntities();
-    const loaded = [];
-    const stored = [];
-    const empty = [];
-
-    for (const s of spoolEntities) {
-      if (s.status.startsWith("Loaded")) {
-        loaded.push(s);
-      } else if (s.status === "Stored") {
-        stored.push(s);
-      } else if (s.status === "Empty") {
-        empty.push(s);
-      }
-    }
+    const filaments = this._findFilamentEntities();
+    const loaded = filaments.filter(f => f.isLoaded);
+    const stored = filaments.filter(f => !f.isLoaded && f.remaining > 0);
+    const empty = filaments.filter(f => !f.isLoaded && f.remaining <= 0);
 
     const totalEntity = this._hass.states[`sensor.${this._prefix}_total_consumed`];
     const lastPrintEntity = this._hass.states[`sensor.${this._prefix}_last_print_usage`];
@@ -186,21 +175,21 @@ class BambuFilamentTrackerCard extends HTMLElement {
 
     if (loaded.length > 0) {
       html += `<div class="section-label">Loaded</div>`;
-      html += `<div class="spools">${loaded.map(s => this._renderSpool(s, "")).join("")}</div>`;
+      html += `<div class="filaments">${loaded.map(f => this._renderFilament(f, "")).join("")}</div>`;
     }
 
     if (this._showStored && stored.length > 0) {
       html += `<div class="section-label">In Storage</div>`;
-      html += `<div class="spools">${stored.map(s => this._renderSpool(s, "stored")).join("")}</div>`;
+      html += `<div class="filaments">${stored.map(f => this._renderFilament(f, "stored")).join("")}</div>`;
     }
 
     if (this._showEmpty && empty.length > 0) {
       html += `<div class="section-label">Empty</div>`;
-      html += `<div class="spools">${empty.map(s => this._renderSpool(s, "empty-spool")).join("")}</div>`;
+      html += `<div class="filaments">${empty.map(f => this._renderFilament(f, "empty-spool")).join("")}</div>`;
     }
 
-    if (spoolEntities.length === 0) {
-      html = `<div class="no-spools">No spools registered. Use sync_from_tray service or register spools manually.</div>`;
+    if (filaments.length === 0) {
+      html = `<div class="no-filaments">No filament detected yet. Ensure the printer is on and trays are loaded.</div>`;
     }
 
     const footerHtml = this._showTotals
@@ -215,7 +204,7 @@ class BambuFilamentTrackerCard extends HTMLElement {
       <ha-card>
         <div class="header">
           <span class="title">Filament Inventory</span>
-          <span class="total">${spoolEntities.length} spool${spoolEntities.length !== 1 ? "s" : ""}</span>
+          <span class="total">${filaments.length} spool${filaments.length !== 1 ? "s" : ""}</span>
         </div>
         ${html}
         ${footerHtml}
@@ -223,115 +212,85 @@ class BambuFilamentTrackerCard extends HTMLElement {
     `;
   }
 
-  _findSpoolEntities() {
-    const spools = [];
+  _findFilamentEntities() {
+    const filaments = [];
     const states = this._hass.states;
 
     for (const entityId in states) {
-      if (!entityId.startsWith("sensor.") || !entityId.endsWith("_remaining")) continue;
+      if (!entityId.startsWith("sensor.")) continue;
       const state = states[entityId];
-      if (!state.attributes || !state.attributes.spool_id) continue;
-      if (!state.attributes.color_hex) continue;
+      const attrs = state.attributes;
+      if (!attrs || attrs.color_id === undefined || attrs.is_loaded === undefined) continue;
 
-      const spoolId = state.attributes.spool_id;
-      const statusEntity = this._findStatusEntity(spoolId);
+      const remaining = parseFloat(state.state) || 0;
+      const startCap = attrs.start_capacity || 1000;
+      const pct = startCap > 0 ? Math.round((remaining / startCap) * 100) : 0;
+      const isLow = this._checkLow(attrs.spool_id);
 
-      spools.push({
-        spoolId: spoolId,
-        name: this._getDeviceName(entityId) || state.attributes.spool_id,
-        colorHex: state.attributes.color_hex || "#cccccc",
-        material: state.attributes.material || "PLA",
-        brand: state.attributes.brand || "",
-        remainingG: parseFloat(state.state) || 0,
-        initialG: state.attributes.initial_weight_g || 1000,
-        totalConsumedG: state.attributes.total_consumed_g || 0,
-        status: statusEntity ? statusEntity.state : state.attributes.status || "Unknown",
-        tray: state.attributes.tray,
-        pct: this._calcPct(parseFloat(state.state) || 0, state.attributes.initial_weight_g || 1000),
-        isLow: this._checkLow(spoolId),
+      filaments.push({
+        entityId,
+        colorHex: attrs.color_id || "#cccccc",
+        colorName: attrs.color || "Unknown",
+        type: attrs.type || "PLA",
+        isLoaded: attrs.is_loaded === true,
+        loadedPosition: attrs.loaded_position,
+        remaining: remaining,
+        startCapacity: startCap,
+        pct,
+        isLow,
       });
     }
 
-    return spools;
-  }
-
-  _findStatusEntity(spoolId) {
-    const entityId = `sensor.spool_${spoolId}_status`.replace(/-/g, "_");
-    // HA normalizes entity IDs — search by spool_id attribute instead
-    for (const eid in this._hass.states) {
-      if (eid.endsWith("_status")) {
-        const s = this._hass.states[eid];
-        if (s.attributes && s.attributes.spool_id === spoolId) return s;
-      }
-    }
-    return null;
-  }
-
-  _getDeviceName(entityId) {
-    const state = this._hass.states[entityId];
-    if (!state) return null;
-    const friendly = state.attributes.friendly_name || "";
-    return friendly.replace(" Remaining", "").trim() || null;
-  }
-
-  _calcPct(remaining, initial) {
-    if (initial <= 0) return 0;
-    return Math.round((remaining / initial) * 100);
+    const loaded = filaments.filter(f => f.isLoaded);
+    loaded.sort((a, b) => (a.loadedPosition || 0) - (b.loadedPosition || 0));
+    const rest = filaments.filter(f => !f.isLoaded);
+    return [...loaded, ...rest];
   }
 
   _checkLow(spoolId) {
+    if (!spoolId) return false;
     for (const eid in this._hass.states) {
-      if (eid.endsWith("_low")) {
-        const s = this._hass.states[eid];
-        if (s.attributes && s.attributes.spool_id === spoolId) return s.state === "on";
-      }
+      if (!eid.endsWith("_low")) continue;
+      const s = this._hass.states[eid];
+      if (s.state === "on" && s.attributes && s.attributes.spool_id === spoolId) return true;
     }
     return false;
   }
 
-  _renderSpool(s, cssClass) {
-    const barColor = s.isLow ? "var(--bft-low)" : s.colorHex;
-    const lowClass = s.isLow ? " low" : "";
-    const statusText = s.status;
+  _renderFilament(f, cssClass) {
+    const barColor = f.isLow ? "var(--bft-low)" : f.colorHex;
+    const lowClass = f.isLow ? " low" : "";
+    const status = f.isLoaded ? `Tray ${f.loadedPosition}` : (f.remaining > 0 ? "Stored" : "Empty");
 
     return `
-      <div class="spool ${cssClass}">
-        <div class="color-dot" style="background: ${s.colorHex};"></div>
-        <div class="spool-info">
-          <div class="spool-top">
-            <span class="spool-label">${s.name} &mdash; ${s.pct}%</span>
-            <span class="spool-material">${s.material}</span>
+      <div class="filament ${cssClass}">
+        <div class="color-dot" style="background: ${f.colorHex};"></div>
+        <div class="filament-info">
+          <div class="filament-top">
+            <span class="filament-label">${f.colorName} &mdash; ${f.pct}%</span>
+            <span class="filament-type">${f.type}</span>
           </div>
           <div class="bar-bg">
-            <div class="bar-fill${lowClass}" style="width: ${s.pct}%; background: ${barColor};"></div>
+            <div class="bar-fill${lowClass}" style="width: ${f.pct}%; background: ${barColor};"></div>
           </div>
-          <div class="spool-bottom">
-            <span class="spool-status">${statusText}</span>
-            <span class="spool-weight">${s.remainingG}g / ${s.initialG}g</span>
+          <div class="filament-bottom">
+            <span class="filament-status">${status}</span>
+            <span class="filament-weight">${f.remaining}g / ${f.startCapacity}g</span>
           </div>
         </div>
       </div>`;
   }
 
   _formatWeight(g) {
-    if (g >= 1000) {
-      return (g / 1000).toFixed(2) + "kg";
-    }
+    if (g >= 1000) return (g / 1000).toFixed(2) + "kg";
     return g.toFixed(1) + "g";
   }
 
   static getStubConfig() {
-    return {
-      entity_prefix: "filament_tracker",
-      show_empty_spools: true,
-      show_stored_spools: true,
-      show_totals: true,
-    };
+    return { entity_prefix: "filament_tracker", show_stored: true, show_empty: true, show_totals: true };
   }
 
-  getCardSize() {
-    return 5;
-  }
+  getCardSize() { return 5; }
 }
 
 customElements.define("bambu-filament-tracker-card", BambuFilamentTrackerCard);

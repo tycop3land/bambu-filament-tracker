@@ -48,11 +48,10 @@ async def async_setup_entry(
     )
 
 
-def _spool_device_info(entry: ConfigEntry, spool: Spool) -> DeviceInfo:
-    name = spool.name or f"{spool.color_hex} {spool.material_type}"
+def _filament_device_info(entry: ConfigEntry, spool: Spool) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, spool.spool_id)},
-        name=name,
+        name=f"Filament - {spool.color_hex.upper()}",
         manufacturer=spool.brand or "Unknown",
         model=spool.material_type,
         via_device=(DOMAIN, entry.data[CONF_ENTITY_PREFIX]),
@@ -80,7 +79,7 @@ class SpoolLowBinarySensor(BinarySensorEntity):
         spool = self._spool()
         if spool is None:
             return None
-        return _spool_device_info(self._entry, spool)
+        return _filament_device_info(self._entry, spool)
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(
