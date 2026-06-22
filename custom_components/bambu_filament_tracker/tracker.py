@@ -63,28 +63,41 @@ class ConsumptionTracker:
         self._unsub: list = []
         self._pending_tray_changes: list[dict] = []
         self._tray_entity_ids: list[str] = []
+        self._eid_print_status: str | None = None
+        self._eid_print_weight: str | None = None
+        self._eid_online: str | None = None
+        self._eid_print_progress: str | None = None
+        self._eid_active_tray_index: str | None = None
 
     @property
     def _state(self) -> TrackerState:
         return self._store.tracker_state
 
-    def _entity_id(self, suffix: str) -> str:
-        return f"sensor.{self._prefix}_{suffix}"
-
-    def _binary_entity_id(self, suffix: str) -> str:
-        return f"binary_sensor.{self._prefix}_{suffix}"
-
-    def _get_state_value(self, entity_id: str) -> str | None:
+    def _get_state_value(self, entity_id: str | None) -> str | None:
+        if entity_id is None:
+            return None
         state = self._hass.states.get(entity_id)
         if state is None or state.state in ("unavailable", "unknown"):
             return None
         return state.state
 
-    def _get_state_attr(self, entity_id: str, attr: str):
+    def _get_state_attr(self, entity_id: str | None, attr: str):
+        if entity_id is None:
+            return None
         state = self._hass.states.get(entity_id)
         if state is None:
             return None
         return state.attributes.get(attr)
+
+    def _discover_entity(self, domain: str, suffix: str) -> str | None:
+        """Find an entity by scanning for prefix_*suffix pattern."""
+        escaped = re.escape(self._prefix)
+        pattern = re.compile(rf"^{domain}\.{escaped}_(.+_)?{re.escape(suffix)}$")
+        ids = self._hass.states.async_entity_ids(domain)
+        for entity_id in ids:
+            if pattern.match(entity_id):
+                return entity_id
+        return None
 
     def _discover_tray_entities(self) -> list[str]:
         """Scan HA state for tray entities matching our prefix."""
@@ -101,46 +114,61 @@ class ConsumptionTracker:
 
     async def async_start(self) -> None:
         """Start tracking. Subscribe to state changes and sync current tray state."""
-        print_status_id = self._entity_id("print_status")
-        online_id = self._binary_entity_id("online")
-        print_weight_id = self._entity_id("print_weight")
-
+        self._eid_print_status = self._discover_entity("sensor", "print_status")
+        self._eid_print_weight = self._discover_entity("sensor", "print_weight")
+        self._eid_online = self._discover_entity("binary_sensor", "online")
+        self._eid_print_progress = self._discover_entity("sensor", "print_progress")
+        self._eid_active_tray_index = self._discover_entity("sensor", "active_tray_index")
         self._tray_entity_ids = self._discover_tray_entities()
 
         _LOGGER.info(
-            "Starting tracker with prefix=%s, listening to: %s, %s, %s",
-            self._prefix, print_status_id, online_id, print_weight_id,
+            "Discovered entities for prefix '%s': "
+            "print_status=%s, print_weight=%s, online=%s, "
+            "print_progress=%s, active_tray_index=%s, trays=%s",
+            self._prefix,
+            self._eid_print_status,
+            self._eid_print_weight,
+            self._eid_online,
+            self._eid_print_progress,
+            self._eid_active_tray_index,
+            self._tray_entity_ids,
         )
-        _LOGGER.info("Discovered tray entities: %s", self._tray_entity_ids)
 
+        missing = []
+        if not self._eid_print_status:
+            missing.append("print_status")
+        if not self._eid_print_weight:
+            missing.append("print_weight")
+        if not self._eid_online:
+            missing.append("online")
         if not self._tray_entity_ids:
+            missing.append("tray entities")
+        if missing:
             _LOGGER.warning(
-                "No tray entities found for prefix '%s' — "
+                "Could not find entities for prefix '%s': %s — "
                 "check that the Bambu Lab integration is loaded and the printer is online",
-                self._prefix,
+                self._prefix, ", ".join(missing),
             )
 
-        for eid in [print_status_id, online_id, print_weight_id]:
-            state = self._hass.states.get(eid)
-            if state is None:
-                _LOGGER.warning("Entity %s not found — check entity_prefix config", eid)
-
-        self._unsub.append(
-            async_track_state_change_event(
-                self._hass, [print_status_id], self._on_print_status_change
+        listen_entities: list[str] = []
+        if self._eid_print_status:
+            self._unsub.append(
+                async_track_state_change_event(
+                    self._hass, [self._eid_print_status], self._on_print_status_change
+                )
             )
-        )
-        self._unsub.append(
-            async_track_state_change_event(
-                self._hass, [online_id], self._on_online_change
+        if self._eid_online:
+            self._unsub.append(
+                async_track_state_change_event(
+                    self._hass, [self._eid_online], self._on_online_change
+                )
             )
-        )
-        self._unsub.append(
-            async_track_state_change_event(
-                self._hass, [print_weight_id], self._on_print_weight_change
+        if self._eid_print_weight:
+            self._unsub.append(
+                async_track_state_change_event(
+                    self._hass, [self._eid_print_weight], self._on_print_weight_change
+                )
             )
-        )
-
         if self._tray_entity_ids:
             self._unsub.append(
                 async_track_state_change_event(
@@ -156,7 +184,6 @@ class ConsumptionTracker:
             )
         )
 
-        # Initial sync: read current tray states and create spool devices
         await self._initial_tray_sync()
 
         if self._state.phase in (PHASE_PRINTING, PHASE_INTERRUPTED):
@@ -229,8 +256,7 @@ class ConsumptionTracker:
 
     async def _periodic_persist(self, _now=None) -> None:
         if self._state.phase == PHASE_PRINTING:
-            progress = self._entity_id("print_progress")
-            pct = self._get_state_value(progress)
+            pct = self._get_state_value(self._eid_print_progress)
             if pct is not None:
                 try:
                     self._state.print_percentage = int(float(pct))
@@ -258,9 +284,9 @@ class ConsumptionTracker:
         self._state.print_percentage = 0
         self._state.last_print_weight = 0.0
 
-        gcode = self._get_state_attr(self._entity_id("print_status"), "gcode_file")
+        gcode = self._get_state_attr(self._eid_print_status, "gcode_file")
         if not gcode:
-            gcode = self._get_state_attr(self._entity_id("print_status"), "subtask_name")
+            gcode = self._get_state_attr(self._eid_print_status, "subtask_name")
         self._state.gcode_file = gcode or "unknown"
 
         self._state.pre_print_remaining = {}
@@ -283,7 +309,7 @@ class ConsumptionTracker:
         _LOGGER.info("Print completing with status: %s", final_status)
         self._state.phase = PHASE_PRINT_COMPLETING
 
-        progress = self._get_state_value(self._entity_id("print_progress"))
+        progress = self._get_state_value(self._eid_print_progress)
         if progress is not None:
             try:
                 self._state.print_percentage = int(float(progress))
@@ -299,7 +325,7 @@ class ConsumptionTracker:
         await self._process_pending_tray_changes()
 
     async def _handle_recovery(self) -> None:
-        print_status = self._get_state_value(self._entity_id("print_status"))
+        print_status = self._get_state_value(self._eid_print_status)
         _LOGGER.info("Recovery: print_status = %s", print_status)
 
         if print_status == "running":
@@ -309,9 +335,7 @@ class ConsumptionTracker:
             await self._transition_to_completing(final)
 
     async def _calculate_and_deduct(self, final_status: str) -> None:
-        weights_attr = self._get_state_attr(
-            self._entity_id("print_weight"), "weights"
-        )
+        weights_attr = self._get_state_attr(self._eid_print_weight, "weights")
 
         tray_weights = self._map_weights_to_tray_indices(weights_attr) if weights_attr else {}
 
@@ -398,13 +422,12 @@ class ConsumptionTracker:
             if match:
                 ams_num = int(match.group(1))
                 tray_num = int(match.group(2))
-                if ams_num == self._target_ams:
-                    result[tray_num] = float(weight)
+                result[tray_num] = float(weight)
         return result
 
     def _fallback_weight_calculation(self) -> dict[int, float]:
         """Fallback when weights attribute is unavailable."""
-        print_weight_str = self._get_state_value(self._entity_id("print_weight"))
+        print_weight_str = self._get_state_value(self._eid_print_weight)
         if print_weight_str is None:
             _LOGGER.warning("No print weight available — print will be untracked")
             return {}
@@ -423,7 +446,7 @@ class ConsumptionTracker:
         if len(loaded_trays) == 1:
             return {loaded_trays[0]: total_weight}
 
-        active_tray_str = self._get_state_value(self._entity_id("active_tray_index"))
+        active_tray_str = self._get_state_value(self._eid_active_tray_index)
         if active_tray_str is not None:
             try:
                 active_idx = int(active_tray_str)
