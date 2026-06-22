@@ -88,10 +88,26 @@ class ConsumptionTracker:
         return state.attributes.get(attr)
 
     async def async_start(self) -> None:
-        """Start tracking. Subscribe to state changes."""
+        """Start tracking. Subscribe to state changes and sync current tray state."""
         print_status_id = self._entity_id("print_status")
         online_id = self._binary_entity_id("online")
         print_weight_id = self._entity_id("print_weight")
+
+        _LOGGER.info(
+            "Starting tracker with prefix=%s, listening to: %s, %s, %s",
+            self._prefix, print_status_id, online_id, print_weight_id,
+        )
+
+        tray_ids = [self._entity_id(f"tray_{i}") for i in range(1, NUM_TRAYS + 1)]
+        _LOGGER.info("Tray entity IDs: %s", tray_ids)
+
+        # Verify entities exist
+        for eid in [print_status_id, online_id, print_weight_id] + tray_ids:
+            state = self._hass.states.get(eid)
+            if state is None:
+                _LOGGER.warning("Entity %s not found — check entity_prefix config", eid)
+            else:
+                _LOGGER.debug("Found entity %s = %s", eid, state.state)
 
         self._unsub.append(
             async_track_state_change_event(
@@ -109,7 +125,6 @@ class ConsumptionTracker:
             )
         )
 
-        tray_ids = [self._entity_id(f"tray_{i}") for i in range(1, NUM_TRAYS + 1)]
         self._unsub.append(
             async_track_state_change_event(
                 self._hass, tray_ids, self._on_tray_change
@@ -123,6 +138,9 @@ class ConsumptionTracker:
                 self._hass, self._periodic_persist, timedelta(seconds=PERSIST_INTERVAL_SECONDS)
             )
         )
+
+        # Initial sync: read current tray states and create spool devices
+        await self._initial_tray_sync()
 
         if self._state.phase in (PHASE_PRINTING, PHASE_INTERRUPTED):
             _LOGGER.info("Recovering from phase %s after restart", self._state.phase)
@@ -402,9 +420,42 @@ class ConsumptionTracker:
         )
         return {}
 
+    async def _initial_tray_sync(self) -> None:
+        """Read current tray states on startup and create spool devices for loaded trays."""
+        synced = 0
+        for tray_idx in range(1, NUM_TRAYS + 1):
+            entity_id = self._entity_id(f"tray_{tray_idx}")
+            state = self._hass.states.get(entity_id)
+            if state is None or state.state in ("unavailable", "unknown"):
+                _LOGGER.debug("Tray %d: entity %s not available, skipping", tray_idx, entity_id)
+                continue
+
+            existing = self._store.get_spool_for_tray(tray_idx)
+            if existing:
+                _LOGGER.debug("Tray %d: already has spool %s assigned", tray_idx, existing.spool_id)
+                continue
+
+            attrs = state.attributes
+            _LOGGER.info(
+                "Tray %d initial sync: entity=%s, attrs=%s",
+                tray_idx, entity_id, {k: v for k, v in attrs.items() if k in (
+                    "color", "type", "name", "tag_uid", "empty", "remain",
+                    "nozzle_temp_min", "nozzle_temp_max", "k_value",
+                )},
+            )
+
+            await self._process_tray_change(entity_id, state)
+            synced += 1
+
+        if synced > 0:
+            _LOGGER.info("Initial sync: created/matched %d spool(s) from tray data", synced)
+        else:
+            _LOGGER.info("Initial sync: no new spools to create (store has %d spools)", len(self._store.spools))
+
     async def _process_tray_change(self, entity_id: str, state) -> None:
         tray_match = re.search(r"tray_(\d+)$", entity_id)
         if not tray_match:
+            _LOGGER.warning("Could not parse tray index from entity_id: %s", entity_id)
             return
         tray_index = int(tray_match.group(1))
 
@@ -417,6 +468,11 @@ class ConsumptionTracker:
 
         if isinstance(is_empty, str):
             is_empty = is_empty.lower() in ("true", "yes", "1")
+
+        _LOGGER.debug(
+            "Processing tray %d change: color=%s, type=%s, name=%s, tag_uid=%s, empty=%s",
+            tray_index, color_hex, material_type, name, tag_uid, is_empty,
+        )
 
         default_weight = self._entry.data.get("default_spool_weight_g", 1000)
         self._registry.handle_tray_change(

@@ -14,7 +14,6 @@ from .const import (
     CONF_DEVICE_NAME,
     CONF_ENTITY_PREFIX,
     DOMAIN,
-    NUM_TRAYS,
     SIGNAL_FILAMENT_UPDATE,
     SIGNAL_NEW_SPOOL,
 )
@@ -30,9 +29,7 @@ async def async_setup_entry(
 
     entities: list[SensorEntity] = []
 
-    # Tracker hub: tray contents + global stats
-    for tray in range(1, NUM_TRAYS + 1):
-        entities.append(TrayContentSensor(store, entry, tray))
+    # Global stats on tracker hub
     entities.append(TotalConsumedSensor(store, entry))
     entities.append(LastPrintUsageSensor(store, entry))
 
@@ -200,17 +197,22 @@ class SpoolStatusSensor(_BaseSpoolSensor):
 
 
 # ---------------------------------------------------------------------------
-# Tracker hub sensors (minimal — just tray contents + global stats)
+# Global stats (tracker hub device)
 # ---------------------------------------------------------------------------
 
 
-class _BaseTrackerSensor(SensorEntity):
+class TotalConsumedSensor(SensorEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
+    _attr_native_unit_of_measurement = UnitOfMass.GRAMS
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_icon = "mdi:weight"
 
     def __init__(self, store: SpoolStore, entry: ConfigEntry) -> None:
         self._store = store
-        self._entry = entry
+        prefix = entry.data[CONF_ENTITY_PREFIX]
+        self._attr_unique_id = f"{prefix}_total_consumed"
+        self._attr_name = "Total Consumed"
         self._attr_device_info = _tracker_device_info(entry)
 
     async def async_added_to_hass(self) -> None:
@@ -224,67 +226,35 @@ class _BaseTrackerSensor(SensorEntity):
     def _handle_update(self) -> None:
         self.async_write_ha_state()
 
-
-class TrayContentSensor(_BaseTrackerSensor):
-    """Shows which spool is loaded in each tray — quick reference only."""
-
-    _attr_icon = "mdi:tray-arrow-down"
-
-    def __init__(self, store: SpoolStore, entry: ConfigEntry, tray: int) -> None:
-        super().__init__(store, entry)
-        self._tray = tray
-        prefix = entry.data[CONF_ENTITY_PREFIX]
-        self._attr_unique_id = f"{prefix}_tray_{tray}_content"
-        self._attr_name = f"Tray {tray}"
-
-    @property
-    def native_value(self) -> str | None:
-        spool = self._store.get_spool_for_tray(self._tray)
-        if spool is None:
-            return "Empty"
-        return spool.name or f"{spool.color_hex} {spool.material_type}"
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        spool = self._store.get_spool_for_tray(self._tray)
-        if spool is None:
-            return {}
-        return {
-            "spool_id": spool.spool_id,
-            "color_hex": spool.color_hex,
-            "material": spool.material_type,
-            "remaining_g": round(spool.remaining_weight_g, 1),
-            "remaining_pct": round(spool.remaining_weight_g / spool.initial_weight_g * 100)
-            if spool.initial_weight_g > 0 else 0,
-        }
-
-
-class TotalConsumedSensor(_BaseTrackerSensor):
-    _attr_native_unit_of_measurement = UnitOfMass.GRAMS
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
-    _attr_icon = "mdi:weight"
-
-    def __init__(self, store: SpoolStore, entry: ConfigEntry) -> None:
-        super().__init__(store, entry)
-        prefix = entry.data[CONF_ENTITY_PREFIX]
-        self._attr_unique_id = f"{prefix}_total_consumed"
-        self._attr_name = "Total Consumed"
-
     @property
     def native_value(self) -> float:
         return round(self._store.lifetime_consumed_g, 1)
 
 
-class LastPrintUsageSensor(_BaseTrackerSensor):
+class LastPrintUsageSensor(SensorEntity):
+    _attr_should_poll = False
+    _attr_has_entity_name = True
     _attr_native_unit_of_measurement = UnitOfMass.GRAMS
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:printer-3d-nozzle-heat"
 
     def __init__(self, store: SpoolStore, entry: ConfigEntry) -> None:
-        super().__init__(store, entry)
+        self._store = store
         prefix = entry.data[CONF_ENTITY_PREFIX]
         self._attr_unique_id = f"{prefix}_last_print_usage"
         self._attr_name = "Last Print Usage"
+        self._attr_device_info = _tracker_device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_FILAMENT_UPDATE, self._handle_update
+            )
+        )
+
+    @callback
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
 
     @property
     def native_value(self) -> float:
