@@ -5,10 +5,19 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from .const import SPOOL_STATUS_EMPTY, SPOOL_STATUS_LOADED, SPOOL_STATUS_STORED
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+from .const import (
+    SIGNAL_NEW_SPOOL,
+    SPOOL_STATUS_EMPTY,
+    SPOOL_STATUS_LOADED,
+    SPOOL_STATUS_STORED,
+)
 from .models import Spool, _utcnow_iso
 
 if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
+
     from .store import SpoolStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -17,8 +26,12 @@ _LOGGER = logging.getLogger(__name__)
 class SpoolRegistry:
     """Manages spool lifecycle: creation, matching, and tray assignment."""
 
-    def __init__(self, store: SpoolStore) -> None:
+    def __init__(self, hass: HomeAssistant, store: SpoolStore) -> None:
+        self._hass = hass
         self._store = store
+
+    def _signal_new_spool(self, spool_id: str) -> None:
+        async_dispatcher_send(self._hass, SIGNAL_NEW_SPOOL, spool_id)
 
     def register_spool(
         self,
@@ -41,6 +54,7 @@ class SpoolRegistry:
             status=SPOOL_STATUS_STORED,
         )
         self._store.add_spool(spool)
+        self._signal_new_spool(spool.spool_id)
         _LOGGER.info("Registered spool %s: %s %s", spool.spool_id, color_hex, name)
         return spool
 
@@ -156,6 +170,7 @@ class SpoolRegistry:
             tag_uid=tag_uid,
         )
         self._store.add_spool(new_spool)
+        self._signal_new_spool(new_spool.spool_id)
         _LOGGER.info(
             "Auto-created spool %s for tray %d (color=%s, material=%s)",
             new_spool.spool_id, tray_index, color_hex, material_type,

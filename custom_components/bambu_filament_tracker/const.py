@@ -5,6 +5,7 @@ STORAGE_KEY = "bambu_filament_tracker"
 STORAGE_VERSION = 1
 
 SIGNAL_FILAMENT_UPDATE = f"{DOMAIN}_update"
+SIGNAL_NEW_SPOOL = f"{DOMAIN}_new_spool"
 
 CONF_ENTITY_PREFIX = "entity_prefix"
 CONF_DEVICE_NAME = "device_name"

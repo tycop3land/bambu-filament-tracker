@@ -20,7 +20,9 @@ from .const import (
     DOMAIN,
     NUM_TRAYS,
     SIGNAL_FILAMENT_UPDATE,
+    SIGNAL_NEW_SPOOL,
 )
+from .models import Spool
 from .store import SpoolStore
 
 
@@ -30,8 +32,83 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     store: SpoolStore = data["store"]
 
-    entities = [TrayLowBinarySensor(store, entry, tray) for tray in range(1, NUM_TRAYS + 1)]
+    data["binary_sensor_add_entities"] = async_add_entities
+
+    entities: list[BinarySensorEntity] = []
+
+    for tray in range(1, NUM_TRAYS + 1):
+        entities.append(TrayLowBinarySensor(store, entry, tray))
+
+    for spool in store.spools.values():
+        entities.append(SpoolLowBinarySensor(store, entry, spool.spool_id))
+
     async_add_entities(entities)
+
+    @callback
+    def _on_new_spool(spool_id: str) -> None:
+        spool = store.get_spool(spool_id)
+        if spool is None:
+            return
+        async_add_entities([SpoolLowBinarySensor(store, entry, spool_id)])
+
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_NEW_SPOOL, _on_new_spool)
+    )
+
+
+def _spool_device_info(entry: ConfigEntry, spool: Spool) -> DeviceInfo:
+    name = spool.name or f"{spool.color_hex} {spool.material_type}"
+    return DeviceInfo(
+        identifiers={(DOMAIN, spool.spool_id)},
+        name=name,
+        manufacturer=spool.brand or "Unknown",
+        model=spool.material_type,
+        via_device=(DOMAIN, entry.data[CONF_ENTITY_PREFIX]),
+    )
+
+
+class SpoolLowBinarySensor(BinarySensorEntity):
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_icon = "mdi:alert-circle-outline"
+
+    def __init__(self, store: SpoolStore, entry: ConfigEntry, spool_id: str) -> None:
+        self._store = store
+        self._entry = entry
+        self._spool_id = spool_id
+        self._attr_unique_id = f"spool_{spool_id}_low"
+        self._attr_name = "Low Filament"
+
+    def _spool(self) -> Spool | None:
+        return self._store.get_spool(self._spool_id)
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        spool = self._spool()
+        if spool is None:
+            return None
+        return _spool_device_info(self._entry, spool)
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_FILAMENT_UPDATE, self._handle_update
+            )
+        )
+
+    @callback
+    def _handle_update(self) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def is_on(self) -> bool | None:
+        spool = self._spool()
+        if spool is None or spool.initial_weight_g <= 0:
+            return None
+        threshold = self._entry.data.get(CONF_LOW_THRESHOLD_PCT, DEFAULT_LOW_THRESHOLD_PCT)
+        remaining_pct = spool.remaining_weight_g / spool.initial_weight_g * 100
+        return remaining_pct < threshold
 
 
 class TrayLowBinarySensor(BinarySensorEntity):

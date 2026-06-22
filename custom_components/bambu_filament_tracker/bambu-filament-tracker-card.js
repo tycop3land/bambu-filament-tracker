@@ -1,4 +1,4 @@
-const CARD_VERSION = 1;
+const CARD_VERSION = 2;
 
 const CSS = `
   :host {
@@ -27,18 +27,34 @@ const CSS = `
     font-size: 13px;
     color: var(--bft-secondary);
   }
-  .trays {
+  .section-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--bft-secondary);
+    margin: 16px 0 8px 0;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--bft-border);
+  }
+  .section-label:first-of-type {
+    margin-top: 0;
+  }
+  .spools {
     display: flex;
     flex-direction: column;
     gap: 12px;
   }
-  .tray {
+  .spool {
     display: flex;
     align-items: center;
     gap: 12px;
   }
-  .tray.empty {
-    opacity: 0.4;
+  .spool.empty-spool {
+    opacity: 0.45;
+  }
+  .spool.stored {
+    opacity: 0.75;
   }
   .color-dot {
     width: 28px;
@@ -47,22 +63,26 @@ const CSS = `
     flex-shrink: 0;
     border: 2px solid var(--bft-border);
   }
-  .tray-info {
+  .spool-info {
     flex: 1;
     min-width: 0;
   }
-  .tray-top {
+  .spool-top {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-bottom: 4px;
   }
-  .tray-label {
+  .spool-label {
     font-size: 13px;
     font-weight: 500;
     color: var(--bft-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 60%;
   }
-  .tray-material {
+  .spool-material {
     font-size: 12px;
     color: var(--bft-secondary);
   }
@@ -85,18 +105,18 @@ const CSS = `
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
   }
-  .tray-bottom {
+  .spool-bottom {
     display: flex;
     justify-content: space-between;
     align-items: center;
     margin-top: 3px;
   }
-  .tray-color-hex {
+  .spool-status {
     font-size: 11px;
     color: var(--bft-secondary);
     font-family: monospace;
   }
-  .tray-weight {
+  .spool-weight {
     font-size: 11px;
     color: var(--bft-secondary);
   }
@@ -108,6 +128,12 @@ const CSS = `
     border-top: 1px solid var(--bft-border);
     font-size: 12px;
     color: var(--bft-secondary);
+  }
+  .no-spools {
+    text-align: center;
+    color: var(--bft-secondary);
+    font-size: 13px;
+    padding: 24px 0;
   }
 `;
 
@@ -122,7 +148,8 @@ class BambuFilamentTrackerCard extends HTMLElement {
   setConfig(config) {
     this._config = config;
     this._prefix = config.entity_prefix || "filament_tracker";
-    this._showEmpty = config.show_empty_trays !== false;
+    this._showEmpty = config.show_empty_spools !== false;
+    this._showStored = config.show_stored_spools !== false;
     this._showTotals = config.show_totals !== false;
   }
 
@@ -135,23 +162,19 @@ class BambuFilamentTrackerCard extends HTMLElement {
   _updateCard() {
     if (!this._hass || !this.shadowRoot) return;
 
-    const trays = [];
-    for (let i = 1; i <= 4; i++) {
-      const remaining = this._hass.states[`sensor.${this._prefix}_tray_${i}_remaining`];
-      const pct = this._hass.states[`sensor.${this._prefix}_tray_${i}_remaining_pct`];
-      const color = this._hass.states[`sensor.${this._prefix}_tray_${i}_color`];
-      const material = this._hass.states[`sensor.${this._prefix}_tray_${i}_material`];
-      const low = this._hass.states[`binary_sensor.${this._prefix}_tray_${i}_low`];
+    const spoolEntities = this._findSpoolEntities();
+    const loaded = [];
+    const stored = [];
+    const empty = [];
 
-      const isEmpty = !remaining || remaining.state === "unknown" || remaining.state === "unavailable" || remaining.state === "None";
-      const colorHex = (color && color.state && color.state !== "unknown" && color.state !== "None") ? color.state : "#cccccc";
-      const materialStr = (material && material.state && material.state !== "unknown" && material.state !== "None") ? material.state : "";
-      const pctVal = (!isEmpty && pct && pct.state !== "unknown") ? parseInt(pct.state) : 0;
-      const remainingVal = !isEmpty ? parseFloat(remaining.state) : 0;
-      const initialVal = (!isEmpty && remaining.attributes && remaining.attributes.initial_weight_g) ? remaining.attributes.initial_weight_g : 1000;
-      const isLow = low && low.state === "on";
-
-      trays.push({ i, isEmpty, colorHex, materialStr, pctVal, remainingVal, initialVal, isLow });
+    for (const s of spoolEntities) {
+      if (s.status.startsWith("Loaded")) {
+        loaded.push(s);
+      } else if (s.status === "Stored") {
+        stored.push(s);
+      } else if (s.status === "Empty") {
+        empty.push(s);
+      }
     }
 
     const totalEntity = this._hass.states[`sensor.${this._prefix}_total_consumed`];
@@ -159,43 +182,26 @@ class BambuFilamentTrackerCard extends HTMLElement {
     const totalVal = totalEntity ? parseFloat(totalEntity.state) || 0 : 0;
     const lastPrintVal = lastPrintEntity ? parseFloat(lastPrintEntity.state) || 0 : 0;
 
-    const trayHtml = trays
-      .filter(t => this._showEmpty || !t.isEmpty)
-      .map(t => {
-        if (t.isEmpty) {
-          return `
-            <div class="tray empty">
-              <div class="color-dot" style="background: var(--bft-empty);"></div>
-              <div class="tray-info">
-                <div class="tray-top">
-                  <span class="tray-label">Tray ${t.i}</span>
-                  <span class="tray-material">Empty</span>
-                </div>
-                <div class="bar-bg"><div class="bar-fill" style="width: 0%;"></div></div>
-              </div>
-            </div>`;
-        }
-        const barColor = t.isLow ? "var(--bft-low)" : t.colorHex;
-        const lowClass = t.isLow ? " low" : "";
-        return `
-          <div class="tray">
-            <div class="color-dot" style="background: ${t.colorHex};"></div>
-            <div class="tray-info">
-              <div class="tray-top">
-                <span class="tray-label">Tray ${t.i} &mdash; ${t.pctVal}%</span>
-                <span class="tray-material">${t.materialStr}</span>
-              </div>
-              <div class="bar-bg">
-                <div class="bar-fill${lowClass}" style="width: ${t.pctVal}%; background: ${barColor};"></div>
-              </div>
-              <div class="tray-bottom">
-                <span class="tray-color-hex">${t.colorHex}</span>
-                <span class="tray-weight">${t.remainingVal}g / ${t.initialVal}g</span>
-              </div>
-            </div>
-          </div>`;
-      })
-      .join("");
+    let html = "";
+
+    if (loaded.length > 0) {
+      html += `<div class="section-label">Loaded</div>`;
+      html += `<div class="spools">${loaded.map(s => this._renderSpool(s, "")).join("")}</div>`;
+    }
+
+    if (this._showStored && stored.length > 0) {
+      html += `<div class="section-label">In Storage</div>`;
+      html += `<div class="spools">${stored.map(s => this._renderSpool(s, "stored")).join("")}</div>`;
+    }
+
+    if (this._showEmpty && empty.length > 0) {
+      html += `<div class="section-label">Empty</div>`;
+      html += `<div class="spools">${empty.map(s => this._renderSpool(s, "empty-spool")).join("")}</div>`;
+    }
+
+    if (spoolEntities.length === 0) {
+      html = `<div class="no-spools">No spools registered. Use sync_from_tray service or register spools manually.</div>`;
+    }
 
     const footerHtml = this._showTotals
       ? `<div class="footer">
@@ -208,13 +214,103 @@ class BambuFilamentTrackerCard extends HTMLElement {
       <style>${CSS}</style>
       <ha-card>
         <div class="header">
-          <span class="title">Filament Tracker</span>
-          <span class="total">${this._formatWeight(totalVal)} total</span>
+          <span class="title">Filament Inventory</span>
+          <span class="total">${spoolEntities.length} spool${spoolEntities.length !== 1 ? "s" : ""}</span>
         </div>
-        <div class="trays">${trayHtml}</div>
+        ${html}
         ${footerHtml}
       </ha-card>
     `;
+  }
+
+  _findSpoolEntities() {
+    const spools = [];
+    const states = this._hass.states;
+
+    for (const entityId in states) {
+      if (!entityId.startsWith("sensor.") || !entityId.endsWith("_remaining")) continue;
+      const state = states[entityId];
+      if (!state.attributes || !state.attributes.spool_id) continue;
+      if (!state.attributes.color_hex) continue;
+
+      const spoolId = state.attributes.spool_id;
+      const statusEntity = this._findStatusEntity(spoolId);
+
+      spools.push({
+        spoolId: spoolId,
+        name: this._getDeviceName(entityId) || state.attributes.spool_id,
+        colorHex: state.attributes.color_hex || "#cccccc",
+        material: state.attributes.material || "PLA",
+        brand: state.attributes.brand || "",
+        remainingG: parseFloat(state.state) || 0,
+        initialG: state.attributes.initial_weight_g || 1000,
+        totalConsumedG: state.attributes.total_consumed_g || 0,
+        status: statusEntity ? statusEntity.state : state.attributes.status || "Unknown",
+        tray: state.attributes.tray,
+        pct: this._calcPct(parseFloat(state.state) || 0, state.attributes.initial_weight_g || 1000),
+        isLow: this._checkLow(spoolId),
+      });
+    }
+
+    return spools;
+  }
+
+  _findStatusEntity(spoolId) {
+    const entityId = `sensor.spool_${spoolId}_status`.replace(/-/g, "_");
+    // HA normalizes entity IDs — search by spool_id attribute instead
+    for (const eid in this._hass.states) {
+      if (eid.endsWith("_status")) {
+        const s = this._hass.states[eid];
+        if (s.attributes && s.attributes.spool_id === spoolId) return s;
+      }
+    }
+    return null;
+  }
+
+  _getDeviceName(entityId) {
+    const state = this._hass.states[entityId];
+    if (!state) return null;
+    const friendly = state.attributes.friendly_name || "";
+    return friendly.replace(" Remaining", "").trim() || null;
+  }
+
+  _calcPct(remaining, initial) {
+    if (initial <= 0) return 0;
+    return Math.round((remaining / initial) * 100);
+  }
+
+  _checkLow(spoolId) {
+    for (const eid in this._hass.states) {
+      if (eid.endsWith("_low")) {
+        const s = this._hass.states[eid];
+        if (s.attributes && s.attributes.spool_id === spoolId) return s.state === "on";
+      }
+    }
+    return false;
+  }
+
+  _renderSpool(s, cssClass) {
+    const barColor = s.isLow ? "var(--bft-low)" : s.colorHex;
+    const lowClass = s.isLow ? " low" : "";
+    const statusText = s.status;
+
+    return `
+      <div class="spool ${cssClass}">
+        <div class="color-dot" style="background: ${s.colorHex};"></div>
+        <div class="spool-info">
+          <div class="spool-top">
+            <span class="spool-label">${s.name} &mdash; ${s.pct}%</span>
+            <span class="spool-material">${s.material}</span>
+          </div>
+          <div class="bar-bg">
+            <div class="bar-fill${lowClass}" style="width: ${s.pct}%; background: ${barColor};"></div>
+          </div>
+          <div class="spool-bottom">
+            <span class="spool-status">${statusText}</span>
+            <span class="spool-weight">${s.remainingG}g / ${s.initialG}g</span>
+          </div>
+        </div>
+      </div>`;
   }
 
   _formatWeight(g) {
@@ -225,11 +321,16 @@ class BambuFilamentTrackerCard extends HTMLElement {
   }
 
   static getStubConfig() {
-    return { entity_prefix: "filament_tracker", show_empty_trays: true, show_totals: true };
+    return {
+      entity_prefix: "filament_tracker",
+      show_empty_spools: true,
+      show_stored_spools: true,
+      show_totals: true,
+    };
   }
 
   getCardSize() {
-    return 4;
+    return 5;
   }
 }
 

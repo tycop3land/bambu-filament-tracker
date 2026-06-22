@@ -49,7 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     store = SpoolStore(hass, entry.entry_id)
     await store.async_load()
 
-    registry = SpoolRegistry(store)
+    registry = SpoolRegistry(hass, store)
     tracker = ConsumptionTracker(hass, entry, store, registry)
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
