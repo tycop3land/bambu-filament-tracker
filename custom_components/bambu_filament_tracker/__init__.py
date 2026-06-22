@@ -35,12 +35,15 @@ CARD_PATH = Path(__file__).parent / "bambu-filament-tracker-card.js"
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     """Set up the Bambu Filament Tracker component."""
-    www_dir = Path(hass.config.path("www"))
-    www_dir.mkdir(exist_ok=True)
-    dest = www_dir / "bambu-filament-tracker-card.js"
-    if CARD_PATH.exists():
-        shutil.copy2(str(CARD_PATH), str(dest))
-        _LOGGER.info("Filament tracker card copied to %s", dest)
+    def _copy_card() -> None:
+        www_dir = Path(hass.config.path("www"))
+        www_dir.mkdir(exist_ok=True)
+        dest = www_dir / "bambu-filament-tracker-card.js"
+        if CARD_PATH.exists():
+            shutil.copy2(str(CARD_PATH), str(dest))
+            _LOGGER.info("Filament tracker card copied to %s", dest)
+
+    await hass.async_add_executor_job(_copy_card)
     return True
 
 
