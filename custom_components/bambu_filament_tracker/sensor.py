@@ -20,38 +20,62 @@ from .const import (
 from .models import Spool
 from .store import SpoolStore
 
-HEX_COLOR_NAMES = {
-    "#000000": "Black",
-    "#ffffff": "White",
-    "#ff0000": "Red",
-    "#00ff00": "Green",
-    "#0000ff": "Blue",
-    "#ffff00": "Yellow",
-    "#ff8000": "Orange",
-    "#800080": "Purple",
-    "#ffc0cb": "Pink",
-    "#808080": "Gray",
-    "#a52a2a": "Brown",
-    "#00ffff": "Cyan",
-    "#c0c0c0": "Silver",
-    "#ffd700": "Gold",
-    "#f5f5dc": "Beige",
-    "#000080": "Navy",
-    "#008080": "Teal",
-    "#800000": "Maroon",
-    "#808000": "Olive",
-    "#ff00ff": "Magenta",
-}
+COLOR_TABLE: list[tuple[int, int, int, str]] = [
+    (0, 0, 0, "Black"),
+    (255, 255, 255, "White"),
+    (255, 0, 0, "Red"),
+    (0, 128, 0, "Green"),
+    (0, 0, 255, "Blue"),
+    (255, 255, 0, "Yellow"),
+    (255, 128, 0, "Orange"),
+    (128, 0, 128, "Purple"),
+    (255, 192, 203, "Pink"),
+    (128, 128, 128, "Gray"),
+    (165, 42, 42, "Brown"),
+    (0, 255, 255, "Cyan"),
+    (192, 192, 192, "Silver"),
+    (255, 215, 0, "Gold"),
+    (245, 245, 220, "Beige"),
+    (0, 0, 128, "Navy"),
+    (0, 128, 128, "Teal"),
+    (128, 0, 0, "Maroon"),
+    (128, 128, 0, "Olive"),
+    (255, 0, 255, "Magenta"),
+    (0, 255, 0, "Lime"),
+    (75, 0, 130, "Indigo"),
+    (64, 64, 64, "Charcoal"),
+    (255, 127, 80, "Coral"),
+    (0, 191, 255, "Sky Blue"),
+    (144, 238, 144, "Light Green"),
+    (230, 230, 250, "Lavender"),
+    (255, 228, 196, "Bisque"),
+    (255, 99, 71, "Tomato"),
+    (70, 130, 180, "Steel Blue"),
+]
+
+
+def _hex_to_rgb(hex_code: str) -> tuple[int, int, int]:
+    h = hex_code.lstrip("#")
+    if len(h) < 6:
+        h = h.ljust(6, "0")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
 def _color_name(hex_code: str, spool_name: str) -> str:
-    """Derive a human-readable color name from hex or spool name."""
-    normalized = hex_code.lower().strip()
-    if normalized in HEX_COLOR_NAMES:
-        return HEX_COLOR_NAMES[normalized]
-    if spool_name:
-        return spool_name
-    return hex_code
+    """Find the closest named color by Euclidean distance in RGB space."""
+    try:
+        r, g, b = _hex_to_rgb(hex_code)
+    except (ValueError, IndexError):
+        return spool_name or hex_code
+
+    best_name = spool_name or hex_code
+    best_dist = float("inf")
+    for cr, cg, cb, name in COLOR_TABLE:
+        dist = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2
+        if dist < best_dist:
+            best_dist = dist
+            best_name = name
+    return best_name
 
 
 async def async_setup_entry(
@@ -151,14 +175,21 @@ class FilamentSensor(SensorEntity):
         spool = self._spool()
         if spool is None:
             return {}
+        remaining_pct = (
+            round(spool.remaining_weight_g / spool.initial_weight_g * 100, 1)
+            if spool.initial_weight_g > 0
+            else 0
+        )
         return {
             "is_loaded": spool.status == "loaded",
             "loaded_position": spool.tray_index if spool.status == "loaded" else 0,
             "remaining_capacity": round(spool.remaining_weight_g, 1),
+            "remaining_pct": remaining_pct,
             "start_capacity": spool.initial_weight_g,
             "type": spool.material_type,
             "color": _color_name(spool.color_hex, spool.name),
             "color_id": spool.color_hex,
+            "brand": spool.brand or "Unknown",
             "total_consumed": round(spool.total_consumed_g, 1),
             "print_count": len(spool.print_ids),
             "spool_id": spool.spool_id,
