@@ -130,10 +130,16 @@ def _tracker_device_info(entry: ConfigEntry) -> DeviceInfo:
     )
 
 
+def _filament_device_name(spool: Spool) -> str:
+    color = _color_name(spool.color_hex, "")
+    name = spool.name or spool.material_type
+    return f"Filament - {name} - {color} ({spool.color_hex.upper()})"
+
+
 def _filament_device_info(entry: ConfigEntry, spool: Spool) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, spool.spool_id)},
-        name=f"Filament - {spool.color_hex.upper()}",
+        name=_filament_device_name(spool),
         manufacturer=spool.brand or "Unknown",
         model=spool.material_type,
         via_device=(DOMAIN, entry.data[CONF_ENTITY_PREFIX]),

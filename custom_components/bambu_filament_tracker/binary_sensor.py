@@ -13,7 +13,6 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
-    CONF_ENTITY_PREFIX,
     CONF_LOW_THRESHOLD_PCT,
     DEFAULT_LOW_THRESHOLD_PCT,
     DOMAIN,
@@ -21,6 +20,7 @@ from .const import (
     SIGNAL_NEW_SPOOL,
 )
 from .models import Spool
+from .sensor import _filament_device_info
 from .store import SpoolStore
 
 
@@ -45,16 +45,6 @@ async def async_setup_entry(
 
     entry.async_on_unload(
         async_dispatcher_connect(hass, SIGNAL_NEW_SPOOL, _on_new_spool)
-    )
-
-
-def _filament_device_info(entry: ConfigEntry, spool: Spool) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, spool.spool_id)},
-        name=f"Filament - {spool.color_hex.upper()}",
-        manufacturer=spool.brand or "Unknown",
-        model=spool.material_type,
-        via_device=(DOMAIN, entry.data[CONF_ENTITY_PREFIX]),
     )
 
 
