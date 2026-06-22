@@ -153,7 +153,7 @@ class FilamentSensor(SensorEntity):
             return {}
         return {
             "is_loaded": spool.status == "loaded",
-            "loaded_position": spool.tray_index,
+            "loaded_position": spool.tray_index if spool.status == "loaded" else 0,
             "remaining_capacity": round(spool.remaining_weight_g, 1),
             "start_capacity": spool.initial_weight_g,
             "type": spool.material_type,
