@@ -1,0 +1,13 @@
+{
+  "domain": "bambu_filament_tracker",
+  "name": "Bambu Filament Tracker",
+  "codeowners": ["@tycop3land"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/tycop3land/bambu-filament-tracker",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/tycop3land/bambu-filament-tracker/issues",
+  "requirements": [],
+  "version": "0.1.0",
+  "integration_type": "service"
+}

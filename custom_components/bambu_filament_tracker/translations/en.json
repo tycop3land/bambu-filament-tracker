@@ -1,0 +1,26 @@
+{
+  "config": {
+    "abort": {
+      "no_bambu_printers": "No Bambu Lab printers found. Install the Bambu Lab integration first.",
+      "already_configured": "This printer is already configured."
+    },
+    "step": {
+      "user": {
+        "title": "Select Bambu Lab Printer",
+        "description": "Choose the printer to track filament usage for.",
+        "data": {
+          "printer": "Printer"
+        }
+      },
+      "options": {
+        "title": "Filament Tracker Settings",
+        "description": "Configure tracking thresholds and defaults.",
+        "data": {
+          "low_threshold_pct": "Low filament alert threshold (%)",
+          "default_spool_weight_g": "Default spool weight (grams)",
+          "target_ams": "AMS unit number"
+        }
+      }
+    }
+  }
+}

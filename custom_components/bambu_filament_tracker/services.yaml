@@ -1,0 +1,134 @@
+register_spool:
+  name: Register Spool
+  description: Register a new filament spool in the tracker.
+  fields:
+    color_hex:
+      name: Color
+      description: Filament color as hex (e.g. "#FF0000")
+      required: true
+      selector:
+        text:
+    material_type:
+      name: Material Type
+      description: Filament material (e.g. PLA, PETG, ABS)
+      required: true
+      selector:
+        select:
+          options:
+            - "PLA"
+            - "PLA+"
+            - "PLA Silk"
+            - "PETG"
+            - "ABS"
+            - "ASA"
+            - "TPU"
+            - "PA"
+            - "PC"
+            - "PVA"
+            - "HIPS"
+            - "PLA-CF"
+            - "PA-CF"
+            - "PETG-CF"
+            - "Other"
+    name:
+      name: Spool Name
+      description: Display name for this spool
+      required: true
+      selector:
+        text:
+    brand:
+      name: Brand
+      description: Filament brand (optional)
+      required: false
+      selector:
+        text:
+    initial_weight_g:
+      name: Initial Weight (grams)
+      description: Total weight of filament on a fresh spool
+      required: false
+      default: 1000
+      selector:
+        number:
+          min: 100
+          max: 5000
+          unit_of_measurement: g
+          mode: box
+    remaining_weight_g:
+      name: Remaining Weight (grams)
+      description: Current remaining weight (defaults to initial weight if not set)
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 5000
+          unit_of_measurement: g
+          mode: box
+
+load_spool:
+  name: Load Spool
+  description: Assign an existing spool to an AMS tray.
+  fields:
+    spool_id:
+      name: Spool ID
+      description: UUID of the spool to load
+      required: true
+      selector:
+        text:
+    tray_index:
+      name: Tray
+      description: AMS tray number (1-4)
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
+
+unload_spool:
+  name: Unload Spool
+  description: Remove spool from an AMS tray (moves to stored status).
+  fields:
+    tray_index:
+      name: Tray
+      description: AMS tray number (1-4)
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
+
+adjust_remaining:
+  name: Adjust Remaining
+  description: Manually set the remaining filament weight for a spool.
+  fields:
+    spool_id:
+      name: Spool ID
+      description: UUID of the spool to adjust
+      required: true
+      selector:
+        text:
+    remaining_weight_g:
+      name: Remaining Weight (grams)
+      description: New remaining weight value
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 5000
+          unit_of_measurement: g
+          mode: box
+
+sync_from_tray:
+  name: Sync From Tray
+  description: Force sync spool data from current Bambu tray attributes.
+  fields:
+    tray_index:
+      name: Tray
+      description: AMS tray number to sync (1-4), or omit to sync all
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 4
+          mode: box
