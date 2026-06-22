@@ -68,6 +68,9 @@ class ConsumptionTracker:
         self._eid_online: str | None = None
         self._eid_print_progress: str | None = None
         self._eid_active_tray_index: str | None = None
+        self._captured_weights: dict | None = None
+        self._captured_print_weight: float = 0.0
+        self._captured_active_tray: int | None = None
 
     @property
     def _state(self) -> TrackerState:
@@ -227,12 +230,27 @@ class ConsumptionTracker:
 
     @callback
     def _on_print_weight_change(self, event: Event) -> None:
+        new_state = event.data.get("new_state")
+        if new_state is None:
+            return
+
         if self._state.phase == PHASE_PRINT_STARTING:
-            new_state = event.data.get("new_state")
-            if new_state and new_state.state not in ("unavailable", "unknown", "0"):
+            if new_state.state not in ("unavailable", "unknown", "0"):
                 self._hass.async_create_task(
                     self._transition_to_printing()
                 )
+
+        if self._state.phase in (PHASE_PRINTING, PHASE_PRINT_STARTING):
+            try:
+                val = float(new_state.state)
+                if val > 0:
+                    self._captured_print_weight = val
+            except (ValueError, TypeError):
+                pass
+            weights = new_state.attributes.get("weights")
+            if weights and isinstance(weights, dict):
+                self._captured_weights = dict(weights)
+                _LOGGER.debug("Captured weights attribute: %s", self._captured_weights)
 
     @callback
     def _on_tray_change(self, event: Event) -> None:
@@ -262,6 +280,23 @@ class ConsumptionTracker:
                     self._state.print_percentage = int(float(pct))
                 except (ValueError, TypeError):
                     pass
+            active = self._get_state_value(self._eid_active_tray_index)
+            if active is not None:
+                try:
+                    self._captured_active_tray = int(active)
+                except (ValueError, TypeError):
+                    pass
+            pw = self._get_state_value(self._eid_print_weight)
+            if pw is not None:
+                try:
+                    val = float(pw)
+                    if val > 0:
+                        self._captured_print_weight = val
+                except (ValueError, TypeError):
+                    pass
+            weights = self._get_state_attr(self._eid_print_weight, "weights")
+            if weights and isinstance(weights, dict):
+                self._captured_weights = dict(weights)
             await self._store.async_save()
 
     async def _handle_print_status(self, old_val: str | None, new_val: str) -> None:
@@ -295,6 +330,9 @@ class ConsumptionTracker:
             if spool:
                 self._state.pre_print_remaining[tray_idx] = spool.remaining_weight_g
 
+        self._captured_weights = None
+        self._captured_print_weight = 0.0
+        self._captured_active_tray = None
         self._pending_tray_changes.clear()
         await self._store.async_save()
 
@@ -336,6 +374,9 @@ class ConsumptionTracker:
 
     async def _calculate_and_deduct(self, final_status: str) -> None:
         weights_attr = self._get_state_attr(self._eid_print_weight, "weights")
+        if not weights_attr and self._captured_weights:
+            weights_attr = self._captured_weights
+            _LOGGER.info("Using captured weights attribute (live read was empty)")
 
         tray_weights = self._map_weights_to_tray_indices(weights_attr) if weights_attr else {}
 
@@ -428,14 +469,19 @@ class ConsumptionTracker:
     def _fallback_weight_calculation(self) -> dict[int, float]:
         """Fallback when weights attribute is unavailable."""
         print_weight_str = self._get_state_value(self._eid_print_weight)
-        if print_weight_str is None:
-            _LOGGER.warning("No print weight available — print will be untracked")
-            return {}
+        total_weight = 0.0
+        if print_weight_str is not None:
+            try:
+                total_weight = float(print_weight_str)
+            except (ValueError, TypeError):
+                pass
 
-        try:
-            total_weight = float(print_weight_str)
-        except (ValueError, TypeError):
-            _LOGGER.warning("Invalid print weight value: %s", print_weight_str)
+        if total_weight <= 0 and self._captured_print_weight > 0:
+            total_weight = self._captured_print_weight
+            _LOGGER.info("Using captured print weight: %.1fg", total_weight)
+
+        if total_weight <= 0:
+            _LOGGER.warning("No print weight available — print will be untracked")
             return {}
 
         loaded_trays = [
@@ -447,16 +493,24 @@ class ConsumptionTracker:
             return {loaded_trays[0]: total_weight}
 
         active_tray_str = self._get_state_value(self._eid_active_tray_index)
+        active_idx = None
         if active_tray_str is not None:
             try:
                 active_idx = int(active_tray_str)
-                if active_idx in loaded_trays:
-                    return {active_idx: total_weight}
             except (ValueError, TypeError):
                 pass
 
+        if active_idx is None and self._captured_active_tray is not None:
+            active_idx = self._captured_active_tray
+            _LOGGER.info("Using captured active tray: %d", active_idx)
+
+        if active_idx is not None and active_idx in loaded_trays:
+            return {active_idx: total_weight}
+
         _LOGGER.warning(
-            "Multiple trays loaded but no weights attribute and no clear active tray — untracked"
+            "Multiple trays loaded but no weights attribute and no clear active tray — untracked. "
+            "captured_weights=%s, captured_print_weight=%.1f, captured_active_tray=%s",
+            self._captured_weights, self._captured_print_weight, self._captured_active_tray,
         )
         return {}
 
