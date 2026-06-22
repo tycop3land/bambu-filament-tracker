@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from pathlib import Path
 
@@ -149,11 +150,13 @@ def _register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
         for data in hass.data.get(DOMAIN, {}).values():
             tracker: ConsumptionTracker = data["tracker"]
             tray_index = call.data.get("tray_index")
-            trays = [tray_index] if tray_index else range(1, 5)
-            prefix = entry.data["entity_prefix"]
-            target_ams = entry.data.get("target_ams", 1)
-            for idx in trays:
-                entity_id = f"sensor.{prefix}_ams_{target_ams}_tray_{idx}"
+            for entity_id in tracker._tray_entity_ids:
+                tray_match = re.search(r"tray_(\d+)$", entity_id)
+                if not tray_match:
+                    continue
+                idx = int(tray_match.group(1))
+                if tray_index and idx != tray_index:
+                    continue
                 state = hass.states.get(entity_id)
                 if state and state.state not in ("unavailable", "unknown"):
                     await tracker._process_tray_change(entity_id, state)

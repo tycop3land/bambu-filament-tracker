@@ -15,7 +15,6 @@ from homeassistant.helpers.event import (
 
 from .const import (
     CONF_ENTITY_PREFIX,
-    CONF_TARGET_AMS,
     NUM_TRAYS,
     PHASE_IDLE,
     PHASE_INTERRUPTED,
@@ -61,9 +60,9 @@ class ConsumptionTracker:
         self._store = store
         self._registry = registry
         self._prefix = entry.data[CONF_ENTITY_PREFIX]
-        self._target_ams = entry.data.get(CONF_TARGET_AMS, 1)
         self._unsub: list = []
         self._pending_tray_changes: list[dict] = []
+        self._tray_entity_ids: list[str] = []
 
     @property
     def _state(self) -> TrackerState:
@@ -87,27 +86,44 @@ class ConsumptionTracker:
             return None
         return state.attributes.get(attr)
 
+    def _discover_tray_entities(self) -> list[str]:
+        """Scan HA state for tray entities matching our prefix."""
+        tray_pattern = re.compile(
+            rf"^sensor\.{re.escape(self._prefix)}_.*_tray_(\d+)$"
+        )
+        found: dict[int, str] = {}
+        for entity_id in self._hass.states.async_entity_ids("sensor"):
+            match = tray_pattern.match(entity_id)
+            if match:
+                tray_num = int(match.group(1))
+                found[tray_num] = entity_id
+        return [found[k] for k in sorted(found)]
+
     async def async_start(self) -> None:
         """Start tracking. Subscribe to state changes and sync current tray state."""
         print_status_id = self._entity_id("print_status")
         online_id = self._binary_entity_id("online")
         print_weight_id = self._entity_id("print_weight")
 
+        self._tray_entity_ids = self._discover_tray_entities()
+
         _LOGGER.info(
             "Starting tracker with prefix=%s, listening to: %s, %s, %s",
             self._prefix, print_status_id, online_id, print_weight_id,
         )
+        _LOGGER.info("Discovered tray entities: %s", self._tray_entity_ids)
 
-        tray_ids = [self._entity_id(f"ams_{self._target_ams}_tray_{i}") for i in range(1, NUM_TRAYS + 1)]
-        _LOGGER.info("Tray entity IDs: %s", tray_ids)
+        if not self._tray_entity_ids:
+            _LOGGER.warning(
+                "No tray entities found for prefix '%s' — "
+                "check that the Bambu Lab integration is loaded and the printer is online",
+                self._prefix,
+            )
 
-        # Verify entities exist
-        for eid in [print_status_id, online_id, print_weight_id] + tray_ids:
+        for eid in [print_status_id, online_id, print_weight_id]:
             state = self._hass.states.get(eid)
             if state is None:
                 _LOGGER.warning("Entity %s not found — check entity_prefix config", eid)
-            else:
-                _LOGGER.debug("Found entity %s = %s", eid, state.state)
 
         self._unsub.append(
             async_track_state_change_event(
@@ -125,11 +141,12 @@ class ConsumptionTracker:
             )
         )
 
-        self._unsub.append(
-            async_track_state_change_event(
-                self._hass, tray_ids, self._on_tray_change
+        if self._tray_entity_ids:
+            self._unsub.append(
+                async_track_state_change_event(
+                    self._hass, self._tray_entity_ids, self._on_tray_change
+                )
             )
-        )
 
         from datetime import timedelta
 
@@ -423,8 +440,12 @@ class ConsumptionTracker:
     async def _initial_tray_sync(self) -> None:
         """Read current tray states on startup and create spool devices for loaded trays."""
         synced = 0
-        for tray_idx in range(1, NUM_TRAYS + 1):
-            entity_id = self._entity_id(f"ams_{self._target_ams}_tray_{tray_idx}")
+        for entity_id in self._tray_entity_ids:
+            tray_match = re.search(r"tray_(\d+)$", entity_id)
+            if not tray_match:
+                continue
+            tray_idx = int(tray_match.group(1))
+
             state = self._hass.states.get(entity_id)
             if state is None or state.state in ("unavailable", "unknown"):
                 _LOGGER.debug("Tray %d: entity %s not available, skipping", tray_idx, entity_id)
