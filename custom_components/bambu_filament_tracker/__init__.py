@@ -10,6 +10,7 @@ from pathlib import Path
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
@@ -65,7 +66,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _register_services(hass, entry)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    await tracker.async_start()
+
+    async def _start_tracker(_event=None) -> None:
+        await tracker.async_start()
+
+    if hass.is_running:
+        await tracker.async_start()
+    else:
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, _start_tracker)
 
     return True
 
