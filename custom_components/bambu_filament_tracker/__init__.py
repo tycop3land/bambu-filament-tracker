@@ -151,8 +151,9 @@ def _register_services(hass: HomeAssistant, entry: ConfigEntry) -> None:
             tray_index = call.data.get("tray_index")
             trays = [tray_index] if tray_index else range(1, 5)
             prefix = entry.data["entity_prefix"]
+            target_ams = entry.data.get("target_ams", 1)
             for idx in trays:
-                entity_id = f"sensor.{prefix}_tray_{idx}"
+                entity_id = f"sensor.{prefix}_ams_{target_ams}_tray_{idx}"
                 state = hass.states.get(entity_id)
                 if state and state.state not in ("unavailable", "unknown"):
                     await tracker._process_tray_change(entity_id, state)

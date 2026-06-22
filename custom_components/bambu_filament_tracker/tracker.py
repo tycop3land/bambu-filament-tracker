@@ -98,7 +98,7 @@ class ConsumptionTracker:
             self._prefix, print_status_id, online_id, print_weight_id,
         )
 
-        tray_ids = [self._entity_id(f"tray_{i}") for i in range(1, NUM_TRAYS + 1)]
+        tray_ids = [self._entity_id(f"ams_{self._target_ams}_tray_{i}") for i in range(1, NUM_TRAYS + 1)]
         _LOGGER.info("Tray entity IDs: %s", tray_ids)
 
         # Verify entities exist
@@ -424,7 +424,7 @@ class ConsumptionTracker:
         """Read current tray states on startup and create spool devices for loaded trays."""
         synced = 0
         for tray_idx in range(1, NUM_TRAYS + 1):
-            entity_id = self._entity_id(f"tray_{tray_idx}")
+            entity_id = self._entity_id(f"ams_{self._target_ams}_tray_{tray_idx}")
             state = self._hass.states.get(entity_id)
             if state is None or state.state in ("unavailable", "unknown"):
                 _LOGGER.debug("Tray %d: entity %s not available, skipping", tray_idx, entity_id)
