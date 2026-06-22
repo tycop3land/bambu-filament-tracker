@@ -28,19 +28,15 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][entry.entry_id]
     store: SpoolStore = data["store"]
 
-    data["sensor_add_entities"] = async_add_entities
-
     entities: list[SensorEntity] = []
 
+    # Tracker hub: tray contents + global stats
     for tray in range(1, NUM_TRAYS + 1):
-        entities.append(TrayRemainingSensor(store, entry, tray))
-        entities.append(TrayRemainingPctSensor(store, entry, tray))
-        entities.append(TrayColorSensor(store, entry, tray))
-        entities.append(TrayMaterialSensor(store, entry, tray))
-
+        entities.append(TrayContentSensor(store, entry, tray))
     entities.append(TotalConsumedSensor(store, entry))
     entities.append(LastPrintUsageSensor(store, entry))
 
+    # One device per existing spool
     for spool in store.spools.values():
         entities.extend(_create_spool_sensors(store, entry, spool))
 
@@ -51,8 +47,7 @@ async def async_setup_entry(
         spool = store.get_spool(spool_id)
         if spool is None:
             return
-        new_entities = _create_spool_sensors(store, entry, spool)
-        async_add_entities(new_entities)
+        async_add_entities(_create_spool_sensors(store, entry, spool))
 
     entry.async_on_unload(
         async_dispatcher_connect(hass, SIGNAL_NEW_SPOOL, _on_new_spool)
@@ -90,7 +85,7 @@ def _spool_device_info(entry: ConfigEntry, spool: Spool) -> DeviceInfo:
 
 
 # ---------------------------------------------------------------------------
-# Per-spool device sensors
+# Per-spool device sensors (PRIMARY — each spool is its own device)
 # ---------------------------------------------------------------------------
 
 
@@ -205,11 +200,11 @@ class SpoolStatusSensor(_BaseSpoolSensor):
 
 
 # ---------------------------------------------------------------------------
-# Tray-based sensors (secondary — "what's in each tray now")
+# Tracker hub sensors (minimal — just tray contents + global stats)
 # ---------------------------------------------------------------------------
 
 
-class _BaseFilamentSensor(SensorEntity):
+class _BaseTrackerSensor(SensorEntity):
     _attr_should_poll = False
     _attr_has_entity_name = True
 
@@ -230,94 +225,41 @@ class _BaseFilamentSensor(SensorEntity):
         self.async_write_ha_state()
 
 
-class TrayRemainingSensor(_BaseFilamentSensor):
-    _attr_native_unit_of_measurement = UnitOfMass.GRAMS
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_icon = "mdi:printer-3d-nozzle"
+class TrayContentSensor(_BaseTrackerSensor):
+    """Shows which spool is loaded in each tray — quick reference only."""
+
+    _attr_icon = "mdi:tray-arrow-down"
 
     def __init__(self, store: SpoolStore, entry: ConfigEntry, tray: int) -> None:
         super().__init__(store, entry)
         self._tray = tray
         prefix = entry.data[CONF_ENTITY_PREFIX]
-        self._attr_unique_id = f"{prefix}_tray_{tray}_remaining"
-        self._attr_name = f"Tray {tray} Remaining"
+        self._attr_unique_id = f"{prefix}_tray_{tray}_content"
+        self._attr_name = f"Tray {tray}"
 
     @property
-    def native_value(self) -> float | None:
+    def native_value(self) -> str | None:
         spool = self._store.get_spool_for_tray(self._tray)
-        return round(spool.remaining_weight_g, 1) if spool else None
+        if spool is None:
+            return "Empty"
+        return spool.name or f"{spool.color_hex} {spool.material_type}"
 
     @property
     def extra_state_attributes(self) -> dict:
         spool = self._store.get_spool_for_tray(self._tray)
         if spool is None:
-            return {"spool_id": None, "spool_name": None, "initial_weight_g": None}
+            return {}
         return {
             "spool_id": spool.spool_id,
-            "spool_name": spool.name,
-            "initial_weight_g": spool.initial_weight_g,
-            "total_consumed_g": spool.total_consumed_g,
+            "color_hex": spool.color_hex,
+            "material": spool.material_type,
+            "remaining_g": round(spool.remaining_weight_g, 1),
+            "remaining_pct": round(spool.remaining_weight_g / spool.initial_weight_g * 100)
+            if spool.initial_weight_g > 0 else 0,
         }
 
 
-class TrayRemainingPctSensor(_BaseFilamentSensor):
-    _attr_native_unit_of_measurement = "%"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_icon = "mdi:gauge"
-
-    def __init__(self, store: SpoolStore, entry: ConfigEntry, tray: int) -> None:
-        super().__init__(store, entry)
-        self._tray = tray
-        prefix = entry.data[CONF_ENTITY_PREFIX]
-        self._attr_unique_id = f"{prefix}_tray_{tray}_remaining_pct"
-        self._attr_name = f"Tray {tray} Remaining %"
-
-    @property
-    def native_value(self) -> int | None:
-        spool = self._store.get_spool_for_tray(self._tray)
-        if spool is None or spool.initial_weight_g <= 0:
-            return None
-        return round(spool.remaining_weight_g / spool.initial_weight_g * 100)
-
-
-class TrayColorSensor(_BaseFilamentSensor):
-    _attr_icon = "mdi:palette"
-
-    def __init__(self, store: SpoolStore, entry: ConfigEntry, tray: int) -> None:
-        super().__init__(store, entry)
-        self._tray = tray
-        prefix = entry.data[CONF_ENTITY_PREFIX]
-        self._attr_unique_id = f"{prefix}_tray_{tray}_color"
-        self._attr_name = f"Tray {tray} Color"
-
-    @property
-    def native_value(self) -> str | None:
-        spool = self._store.get_spool_for_tray(self._tray)
-        return spool.color_hex if spool else None
-
-
-class TrayMaterialSensor(_BaseFilamentSensor):
-    _attr_icon = "mdi:printer-3d"
-
-    def __init__(self, store: SpoolStore, entry: ConfigEntry, tray: int) -> None:
-        super().__init__(store, entry)
-        self._tray = tray
-        prefix = entry.data[CONF_ENTITY_PREFIX]
-        self._attr_unique_id = f"{prefix}_tray_{tray}_material"
-        self._attr_name = f"Tray {tray} Material"
-
-    @property
-    def native_value(self) -> str | None:
-        spool = self._store.get_spool_for_tray(self._tray)
-        return spool.material_type if spool else None
-
-
-# ---------------------------------------------------------------------------
-# Global sensors
-# ---------------------------------------------------------------------------
-
-
-class TotalConsumedSensor(_BaseFilamentSensor):
+class TotalConsumedSensor(_BaseTrackerSensor):
     _attr_native_unit_of_measurement = UnitOfMass.GRAMS
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_icon = "mdi:weight"
@@ -333,7 +275,7 @@ class TotalConsumedSensor(_BaseFilamentSensor):
         return round(self._store.lifetime_consumed_g, 1)
 
 
-class LastPrintUsageSensor(_BaseFilamentSensor):
+class LastPrintUsageSensor(_BaseTrackerSensor):
     _attr_native_unit_of_measurement = UnitOfMass.GRAMS
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:printer-3d-nozzle-heat"
